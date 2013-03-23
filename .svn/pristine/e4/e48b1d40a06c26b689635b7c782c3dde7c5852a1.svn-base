@@ -1,0 +1,911 @@
+#include "mainwindow.h"
+#include "ui_mainwindow.h"
+
+#include <QTextCharFormat>
+#include "registry_read.h"
+
+
+MainWindow::MainWindow(QWidget *parent) :
+    QMainWindow(parent),
+    ui(new Ui::MainWindow)
+{
+    ui->setupUi(this);
+
+    // 设置窗口置顶
+    //    setWindowFlags(windowFlags() | Qt::WindowStaysOnTopHint);
+
+    m_serialConfig_rec = ui->frame_config->rect();
+    ui->stackedWidget->setCurrentWidget(ui->page_serial);
+
+    isinit = true;
+    init_variant_Serial();
+    init_ui_Serial();
+    isinit = false;
+    init_statusBar();
+    update_Counter();
+    init_listViewSendCommond_Model();
+
+    m1 = new QMovie(":/images/show1","GIF",this);
+    ui->label_showGif->setMovie(m1);
+    m1->start();
+
+    m2 = new QMovie(":/images/show2","GIF",this);
+    ui->label_showGif_2->setMovie(m2);
+    m2->start();
+
+}
+
+MainWindow::~MainWindow()
+{
+    SAFE_DELETE(m_serialThread_Read);
+    SAFE_DELETE(m_serialThread_Write);
+    //        SAFE_DELETE(m1);
+    //        SAFE_DELETE(m2);
+
+    port->close();
+    delete ui;
+}
+
+void MainWindow::closeEvent(QCloseEvent *e)
+{
+    write_config();
+    e->accept();
+}
+
+void MainWindow::read_config()
+{
+    QString path = QDir::toNativeSeparators(QDir::currentPath().append(QDir::separator()).append("conf.ini"));
+    qDebug() << "path" <<  path;
+    QSettings cfg(path,QSettings::IniFormat);
+    cfg.beginGroup("serial");
+
+    portName= cfg.value("portName","COM1").toString();
+    QString sendCom = cfg.value("sendCom").toString();
+
+    int baudRate = cfg.value("baudRate",BAUD9600).toInt();
+    int dataBit = cfg.value("dataBit",DATA_8).toInt();
+    int parityBit = cfg.value("parityBit",PAR_NONE).toInt();
+    int stopBit = cfg.value("stopBit",STOP_1).toInt();
+    int timeout = cfg.value("timeout",50).toInt();
+    int interval = cfg.value("interval",100).toInt();
+    int model_v = cfg.value("mode",true).toInt();
+    bool mode = model_v == 1 ? true:false;
+    cfg.endGroup();
+
+    cfg.beginGroup("serialCommand");
+    list = cfg.value("cmd_str").toStringList();
+    cfg.endGroup();
+
+    settings.BaudRate =(BaudRateType)baudRate;
+    settings.DataBits = (DataBitsType)dataBit;
+    settings.Parity = (ParityType)parityBit;
+    settings.StopBits = (StopBitsType)stopBit;
+    settings.FlowControl = FLOW_OFF;
+    settings.Timeout_Millisec = timeout;
+    ui->spinBox_Interval->setValue(interval);
+    ui->sendEdit->appendPlainText(sendCom);
+    //    ui->checkBox_appendMode->setChecked(mode);
+    ui->checkBox_HexSend->setChecked(mode);
+}
+
+void MainWindow::write_config()
+{
+    QString path = QDir::toNativeSeparators(QDir::currentPath().append(QDir::separator()).append("conf.ini"));
+    qDebug() << "path" <<  path;
+    QSettings cfg(path,QSettings::IniFormat);
+    cfg.beginGroup("serial");
+    cfg.setValue("portName",portName);
+    cfg.setValue("sendCom",ui->sendEdit->toPlainText());
+    cfg.setValue("baudRate",(int)settings.BaudRate);
+    cfg.setValue("dataBit",(int)settings.DataBits);
+    cfg.setValue("parityBit",(int)settings.Parity);
+    cfg.setValue("stopBit",(int)settings.StopBits);
+    cfg.setValue("timeout",(int)settings.Timeout_Millisec);
+    cfg.setValue("interval",(int)ui->spinBox_Interval->value());
+    //    cfg.setValue("mode",(int)(ui->checkBox_appendMode->isChecked() == true ? 1:0));
+    cfg.setValue("mode",(int)(ui->checkBox_HexSend->isChecked() == true ? 1:0));
+    cfg.endGroup();
+}
+
+void MainWindow::init_variant_Serial()
+{
+    m_receiveNum = 0;
+    m_sendNum = 0;
+    isHexShow = false;
+    portName.clear();
+
+    read_config();
+
+    port = new QextSerialPort(portName, settings, QextSerialPort::EventDriven,this);
+
+    m_serialThread_Read = new SerialThread(/*SerialThread::readData,*/port);
+    m_serialThread_Write = new SerialThread_Write(/*SerialThread::writeData,*/port);
+
+    connect(m_serialThread_Read,SIGNAL(dataReceived(QByteArray)),this,SLOT(slt_SerialReceiveData(QByteArray)));
+    connect(m_serialThread_Write,SIGNAL(sig_sendNum(qint64)),this,SLOT(slt_sendDataNum(qint64)));
+
+    m_serialThread_Read->start();
+    m_serialThread_Write->start();
+
+
+    connect(ui->recvEdit,SIGNAL(customContextMenuRequested(QPoint)),this,SLOT(slt_showPopMenu(QPoint)));
+    connect(ui->recvEdit_Hex,SIGNAL(customContextMenuRequested(QPoint)),this,SLOT(slt_showPopMenu_Hex(QPoint)));
+    connect(ui->recvEdit_parse,SIGNAL(customContextMenuRequested(QPoint)),this,SLOT(slt_showPopMenu_Parse(QPoint)));
+
+}
+
+QByteArray MainWindow::parseHexData(QByteArray &arg1)
+{
+
+    qint8 c = 0;
+    QByteArray bAry = arg1;
+    QString parseAry;
+
+    if(bAry.contains('-'))
+    {
+        for(int i=0;i<bAry.size();)
+        {
+            if((bAry[i] == '-') && ( c < 3))
+            {
+                parseAry.append(QChar(uchar(bAry[i])));
+                parseAry.append(QChar(uchar(bAry[i+1])));
+                m_data.b.high = uchar(bAry[i+3]);
+                m_data.b.low = uchar(bAry[i+2]);
+                parseAry.append(QString("%1").arg(QString::number(m_data.w,10),4,QLatin1Char('0')));
+                i+=4;
+
+                c +=1;
+            }
+            else
+            {
+                parseAry.append(QChar(uchar(bAry[i])));
+                i++;
+            }
+        }
+    }
+
+    return parseAry.toLatin1();
+}
+
+void MainWindow::slt_SerialReceiveData(const QByteArray &arg)
+{
+    //! 解析收到的数据位char--------------------------------------------
+    //    QString str = QString(arg);
+    //    int size = str.size()+1;
+    //    wchar_t *pW=new wchar_t[size];
+    //    str.toWCharArray(pW);
+    //    pW[size-1] = '\0';
+    //    for(int i=0;i<size-1;i++)
+    //    {
+    //        QString t = QString::fromWCharArray((wchar_t *)pW+i,1);
+    //        qDebug() << t;
+    //        ui->recvEdit->moveCursor(QTextCursor::End);
+    //        ui->recvEdit->insertPlainText(t);
+    //    }
+    //    delete []pW;
+    //    pW = NULL;
+    //! ----------------------------------------------------------------
+    //    ui->recvEdit->appendPlainText(arg.toHex());
+
+    //    QString str = _From_UTF8_2_GBK(arg);
+    //    QByteArray hexStr = arg.toHex().toUpper();
+
+    QByteArray hexStr = arg.trimmed();
+    //    foreach(char ch, arg)
+    //    {
+    //        if(ch != '\0')
+    //        {
+    //            hexStr.append(ch);
+    //        }
+    //    }
+
+    if(hexStr.contains('-'))
+    {
+        bool ok = true;
+        QList<QByteArray> listAry = split_ByteArray(hexStr,&ok);
+        foreach(QByteArray ary , listAry)
+        {
+            ui->recvEdit_parse->appendPlainText(parseHexData(ary));
+        }
+    }
+    else
+    {
+        ui->recvEdit_parse->appendPlainText(hexStr);
+    }
+
+    QString recvStr;
+
+    foreach(uchar ch, hexStr)
+    {
+        //        ui->recvEdit_Hex->moveCursor(QTextCursor::End);
+        //        if((ch == 0x26) || (ch == 36))
+        //        {
+        //            QTextCharFormat fmt;
+        //            fmt.setFontWeight(QFont::Bold);
+        //            fmt.setFontItalic(true);
+        //            fmt.setForeground(QBrush(Qt::red));
+        //            ui->recvEdit_Hex->setCurrentCharFormat(fmt);
+        //        }
+        //        else
+        //        {
+        //            QTextCharFormat fmt;
+        //            ui->recvEdit_Hex->setCurrentCharFormat(fmt);
+        //        }
+        recvStr.append(QString("%1").arg(QString::number(ch,16),2,QLatin1Char('0')));
+        //        recvStr.append(QString::number(ch,16));
+        recvStr.append(QString(' '));
+        //        ui->recvEdit_Hex->appendPlainText(QString::number(ch,16));
+        //        ui->recvEdit_Hex->appendPlainText(QString(' '));
+        //        ui->recvEdit_Hex->insertPlainText(QString::number(ch,16));
+        //        ui->recvEdit_Hex->moveCursor(QTextCursor::End);
+        //        ui->recvEdit_Hex->insertPlainText(QString(' '));
+
+        //        ui->recvEdit_parse->moveCursor(QTextCursor::End);
+    }
+    ui->recvEdit_Hex->appendPlainText(recvStr);
+
+
+
+    //    ui->recvEdit_Hex->appendPlainText(arg.toHex());
+
+
+    //    if(ui->checkBox_appendMode->isChecked())
+    ui->recvEdit->appendPlainText(hexStr);
+    //    else
+    //    {
+    //        ui->recvEdit->moveCursor(QTextCursor::End);
+    //        ui->recvEdit->insertPlainText(hexStr);
+    //    }
+    m_receiveNum += arg.size();
+    update_Counter();
+
+}
+
+void MainWindow::slt_sendDataNum(const qint64 &num)
+{
+    qDebug() << "send num" << num;
+    m_sendNum +=  num;
+    update_Counter();
+}
+
+void MainWindow::slt_set_Counter2zero()
+{
+    m_receiveNum = 0;
+    m_sendNum = 0;
+    update_Counter();
+}
+
+void MainWindow::slt_showPopMenu(const QPoint &pos)
+{
+
+    QMenu *menu = ui->recvEdit->createStandardContextMenu();
+    menu->addSeparator();
+    menu->addSeparator();
+    //    menu->addAction(ui->action_HexShow);
+    //    menu->addSeparator();
+    menu->addAction(ui->action_Save);
+    menu->addSeparator();
+    menu->addAction(ui->action_Clean);
+    menu->addSeparator();
+    menu->exec(QCursor::pos());
+    delete menu;
+    //        QMenu pop(ui->recvEdit);
+    //        pop.addAction(ui->action_HexShow);
+    //        pop.addSeparator();
+    //        pop.addAction(ui->action_Save);
+    //        pop.addSeparator();
+    //        pop.addAction(ui->action_Clean);
+    //        pop.addSeparator();
+    //        pop.exec(QCursor::pos());
+}
+
+void MainWindow::slt_showPopMenu_Hex(const QPoint &pos)
+{
+    QMenu *menu = ui->recvEdit_Hex->createStandardContextMenu();
+    menu->addSeparator();
+    menu->addSeparator();
+    //    menu->addAction(ui->action_HexShow);
+    //    menu->addSeparator();
+    menu->addAction(ui->action_Save);
+    menu->addSeparator();
+    menu->addAction(ui->action_Clean);
+    menu->addSeparator();
+    menu->exec(QCursor::pos());
+    delete menu;
+
+}
+
+void MainWindow::slt_showPopMenu_Parse(const QPoint &pos)
+{
+    QMenu *menu = ui->recvEdit_parse->createStandardContextMenu();
+    menu->addSeparator();
+    menu->addSeparator();
+    //    menu->addAction(ui->action_HexShow);
+    //    menu->addSeparator();
+    menu->addAction(ui->action_Save);
+    menu->addSeparator();
+    menu->addAction(ui->action_Clean);
+    menu->addSeparator();
+    menu->exec(QCursor::pos());
+    delete menu;
+}
+
+
+void MainWindow::update_Counter()
+{
+    //    QString str = " S: ";
+    //    str.append(QString::number(m_receiveNum));
+    QString str = QString(" Rx: %1").arg(m_receiveNum,8);
+    lb_receive_Num->setText(str);
+
+    str = QString(" Tx: %1").arg(m_sendNum,8);
+    lb_send_Num->setText(str);
+
+    QString portName = ui->comboBox_port->currentText();
+    QString baudRate = ui->comboBox_baudRate->currentText();
+
+    bool isOpen = port->isOpen();
+    QString openStatus;
+    if(isOpen)
+        openStatus = tr("打开");
+    else
+        openStatus = tr("关闭");
+
+    QString dataBit = ui->comboBox_dataBits->currentText();
+    QString stopBit = ui->comboBox_stopBits->currentText();
+    QString parityBit = ui->comboBox_parity->currentText();
+    QString queryMode = ui->comboBox_queryMode->currentText();
+
+    str = QString(" %1  %2  %3bps    %4_%5_%6    %7 ")
+          .arg(portName)
+          .arg(openStatus)
+          .arg(baudRate)
+          .arg(dataBit)
+          .arg(stopBit)
+          .arg(parityBit)
+          .arg(queryMode);
+    lb_serialStatus->setText(str);
+
+}
+
+void MainWindow::init_statusBar()
+{
+    QStatusBar *bar = ui->statusBar;
+    bar->setStyleSheet("QStatusBar::item{border: 0px;}");
+
+    gb_Counter = new QGroupBox(bar);
+    hblayout1 = new QHBoxLayout(gb_Counter);
+    hblayout1->setSpacing(6);
+    hblayout1->setContentsMargins(2, 2, 2, 2);
+
+    lb_receive_Num = new QLabel(gb_Counter);
+    lb_send_Num = new QLabel(gb_Counter);
+    bt_Counter2Zero = new QPushButton(tr(" Counter Zero --> : "),gb_Counter);
+
+    lb_receive_Num->setMinimumWidth(100);
+    lb_send_Num->setMinimumWidth(100);
+
+    hblayout1->addWidget(bt_Counter2Zero);
+    hblayout1->addWidget(lb_receive_Num);
+    hblayout1->addWidget(lb_send_Num);
+
+
+    gb_SerialStatus = new QGroupBox(bar);
+    hblayout2 = new QHBoxLayout(gb_SerialStatus);
+    hblayout2->setSpacing(6);
+    hblayout2->setContentsMargins(2,2,2,2);
+
+    lb_serialStatus = new QLabel(gb_SerialStatus);
+
+    hblayout2->addWidget(lb_serialStatus);
+
+    bar->addWidget(gb_Counter);
+    bar->addWidget(gb_SerialStatus);
+    connect(bt_Counter2Zero,SIGNAL(clicked()),this,SLOT(slt_set_Counter2zero()));
+}
+
+void MainWindow::init_ui_Serial()
+{
+    ui->splitter->setStretchFactor(0,1);
+    ui->splitter->setStretchFactor(1,5);
+    //    isinit = true;
+    //
+    m_actionGroup = new QActionGroup(this);
+    m_actionGroup->addAction(ui->action_Serial_Assistant);
+    m_actionGroup->addAction(ui->action_NetWork);
+    ui->action_Serial_Assistant->setChecked(true);
+
+    //通信端口 ***************************************************************
+    QList<QextPortInfo> ports = QextSerialEnumerator::getPorts();
+    foreach(QextPortInfo info,ports)
+    {
+        ui->comboBox_port->addItems(QStringList()<< info.portName);
+        qDebug() << "List of ports:";
+        qDebug() << "port name:" << info.portName;
+        qDebug() << "friendly name:" << info.friendName;
+        qDebug() << "physical name:" << info.physName;
+        qDebug() << "enumerator name:" << info.enumName;
+        qDebug() << "vendor ID:" << QString::number(info.vendorID, 16);
+        qDebug() << "product ID:" << QString::number(info.productID, 16);
+        qDebug() << "===================================";
+    }
+
+#ifdef Q_WS_WIN
+    int index_item = ui->comboBox_port->count();
+    bool hasVSerial = false;
+    QString reg_str("HKEY_LOCAL_MACHINE\\HARDWARE\\DEVICEMAP\\SERIALCOMM");
+    QSettings reg(reg_str, QSettings::NativeFormat);//NativeFormat格式指明在Windows上是注册表
+
+    QStringList serialids = reg.allKeys();
+    foreach(QString str,serialids)
+    {
+        if(str.contains("VSerial") || str.contains("VCP"))
+        {
+            hasVSerial = true;
+            str = str.replace('/',"\\");
+            QString com = WGetKey("HARDWARE\\DEVICEMAP\\SERIALCOMM",str);
+            //            QString comStr = reg.value(str).toString();
+            ui->comboBox_port->addItem(com);
+
+        }
+    }
+    if(hasVSerial)
+    {
+        ui->comboBox_port->insertSeparator(index_item);
+    }
+#endif
+
+
+
+    ui->comboBox_port->setEditable(true);
+    ui->comboBox_port->setCurrentIndex(ui->comboBox_port->findText(portName));
+
+    //波特率 ***************************************************************
+
+    ui->comboBox_baudRate->addItem(tr("1200"),BAUD1200);
+    ui->comboBox_baudRate->addItem(tr("2400"),BAUD2400);
+    ui->comboBox_baudRate->addItem(tr("4800"),BAUD4800);
+    ui->comboBox_baudRate->addItem(tr("9600"),BAUD9600);
+    ui->comboBox_baudRate->addItem(tr("19200"),BAUD19200);
+    ui->comboBox_baudRate->addItem(tr("38400"),BAUD38400);
+    ui->comboBox_baudRate->addItem(tr("57600"),BAUD57600);
+    ui->comboBox_baudRate->addItem(tr("115200"),BAUD115200);
+    int index = ui->comboBox_baudRate->findData(settings.BaudRate);
+    qDebug() << " baudRate index is :" << index;
+    ui->comboBox_baudRate->setCurrentIndex(index);
+
+    //校验位***************************************************************
+    ui->comboBox_parity->addItem(tr("NONE"),PAR_NONE);
+    ui->comboBox_parity->addItem(tr("ODD"),PAR_ODD);
+    ui->comboBox_parity->addItem(tr("EVEN"),PAR_EVEN);
+    ui->comboBox_parity->setCurrentIndex(ui->comboBox_parity->findData(settings.Parity));
+
+    //数据位***************************************************************
+    ui->comboBox_dataBits->addItem(tr("8"), DATA_8);
+    ui->comboBox_dataBits->addItem(tr("7"), DATA_7);
+    ui->comboBox_dataBits->addItem(tr("6"), DATA_6);
+    ui->comboBox_dataBits->addItem(tr("5"), DATA_5);
+    ui->comboBox_dataBits->setCurrentIndex(ui->comboBox_dataBits->findData(settings.DataBits));
+
+    //停止位***************************************************************
+    ui->comboBox_stopBits->addItem(tr("1"), STOP_1);
+    ui->comboBox_stopBits->addItem(tr("2"), STOP_2);
+    ui->comboBox_stopBits->setCurrentIndex(ui->comboBox_stopBits->findData(settings.StopBits));
+
+    // 数据模式
+    ui->comboBox_queryMode->addItem(tr("EventDriven"), QextSerialPort::EventDriven);
+    ui->comboBox_queryMode->addItem(tr("Polling"), QextSerialPort::Polling);
+
+    // 超时
+    ui->comboBox_timeout->setValue(int(settings.Timeout_Millisec));
+    ui->led->turnOff();
+    //    isinit = false;
+}
+
+void MainWindow::on_action_Serial_Assistant_triggered()
+{
+    bool isChecked = ui->action_Serial_Assistant->isChecked();
+    if(isChecked)
+    {
+        ui->stackedWidget->setCurrentWidget(ui->page_serial);
+        gb_SerialStatus->setVisible(true);
+        gb_Counter->setVisible(true);
+    }
+}
+
+// 网络
+void MainWindow::on_action_NetWork_triggered()
+{
+    bool isChecked = ui->action_NetWork->isChecked();
+    if(isChecked)
+    {
+        ui->stackedWidget->setCurrentWidget(ui->page_network);
+        gb_SerialStatus->setVisible(false);
+        gb_Counter->setVisible(false);
+    }
+
+}
+
+void MainWindow::on_comboBox_port_editTextChanged(const QString &arg1)
+{
+    if(isinit)
+        return;
+    portName = arg1;
+    if (port->isOpen())
+    {
+        port->close();
+        ui->led->turnOff();
+        on_bt_openClose_clicked();
+    }
+
+}
+
+void MainWindow::on_comboBox_baudRate_currentIndexChanged(int index)
+{
+    if(isinit)
+        return;
+    int type = ui->comboBox_baudRate->itemData(index).toInt();
+    port->setBaudRate((BaudRateType)type);
+    settings.BaudRate = (BaudRateType)type;
+    qDebug() << "Current changed BaudRate is :" << type;
+}
+
+void MainWindow::on_comboBox_dataBits_currentIndexChanged(int index)
+{
+    if(isinit)
+        return;
+    int type = ui->comboBox_dataBits->itemData(index).toInt();
+    port->setDataBits((DataBitsType)type);
+    settings.DataBits = (DataBitsType)type;
+    qDebug() << "Current changed DataBits is :" << type;
+}
+
+void MainWindow::on_comboBox_parity_currentIndexChanged(int index)
+{
+    if(isinit)
+        return;
+    int type = ui->comboBox_parity->itemData(index).toInt();
+    port->setParity((ParityType)type);
+    settings.Parity = (ParityType)type;
+    qDebug() << "Current changed Parity is :" << type;
+}
+
+void MainWindow::on_comboBox_stopBits_currentIndexChanged(int index)
+{
+    if(isinit)
+        return;
+    int type = ui->comboBox_stopBits->itemData(index).toInt();
+    port->setStopBits((StopBitsType)type);
+    settings.StopBits = (StopBitsType)type;
+    qDebug() << "Current changed StopBits is :" << type;
+}
+
+void MainWindow::on_comboBox_timeout_valueChanged(int arg1)
+{
+    if(isinit)
+        return;
+    port->setTimeout(arg1);
+    settings.Timeout_Millisec = arg1;
+    qDebug() << "Current changed timeout is :" << arg1;
+
+}
+
+void MainWindow::on_comboBox_queryMode_currentIndexChanged(int index)
+{
+    int type = ui->comboBox_queryMode->itemData(index).toInt();
+    port->setQueryMode((QextSerialPort::QueryMode)type);
+    if(type == QextSerialPort::EventDriven)
+    {
+        qDebug() << "Current changed queryMode is : QextSerialPort::EventDriven";
+    }
+    else //QextSerialPort::Polling
+    {
+        qDebug() << "Current changed queryMode is : QextSerialPort::Polling";
+    }
+}
+
+void MainWindow::on_bt_openClose_clicked()
+{
+    if (!port->isOpen()) {
+        port->setPortName(ui->comboBox_port->currentText());
+        //        port->open(QIODevice::ReadWrite);
+        if(!(port->open(QIODevice::ReadWrite | QIODevice::Unbuffered)))
+        {
+            QMessageBox::information(this,tr("Open Serial"),tr("Serial Port already used!\r\n\r\nPlease close or chose other port try again! "));
+
+        }
+    }
+    else {
+        port->close();
+    }
+
+    if (port->isOpen()) {
+        //        if (port->queryMode() == QextSerialPort::Polling)
+        //            timer->start();
+        ui->led->turnOn();
+    }
+    else {
+        //        timer->stop();
+        ui->led->turnOff();
+    }
+}
+
+void MainWindow::on_action_Clean_triggered()
+{
+    ui->recvEdit->clear();
+    ui->recvEdit_Hex->clear();
+    ui->recvEdit_parse->clear();
+    slt_set_Counter2zero();
+}
+
+void MainWindow::on_action_Save_triggered()
+{
+    QString path = QDir::currentPath();
+    QString suffix =QDateTime::currentDateTime().toString("yyyy-MM-dd_hh-mm-ss-zzz");
+    QString nameAsc = suffix + "-[ASCII]";
+    QString nameHex = suffix + "-[HEX]";
+    QString nameparse = suffix + "-[PARSE]";
+
+    QString saveName = path;
+    saveName.append(QDir::separator());
+    saveName.append(nameAsc);
+    saveName.append(".txt");
+    saveName = QDir::toNativeSeparators(saveName);
+
+    QFile data1(saveName);
+    if (data1.open(QFile::WriteOnly | QFile::Text))
+    {
+        QTextStream out(&data1);
+        out << ui->recvEdit->toPlainText();
+    }
+    data1.close();
+
+    //******************************************************************************
+
+    saveName.clear();
+    saveName = path;
+    saveName.append(QDir::separator());
+    saveName.append(nameHex);
+    saveName.append(".txt");
+    saveName = QDir::toNativeSeparators(saveName);
+
+    QFile data2(saveName);
+    if (data2.open(QFile::WriteOnly | QFile::Text))
+    {
+        QTextStream out(&data2);
+        out << ui->recvEdit_Hex->toPlainText();
+    }
+    data2.close();
+
+    saveName.clear();
+    saveName = path;
+    saveName.append(QDir::separator());
+    saveName.append(nameparse);
+    saveName.append(".txt");
+    saveName = QDir::toNativeSeparators(saveName);
+
+    QFile data3(saveName);
+    if (data3.open(QFile::WriteOnly | QFile::Text))
+    {
+        QTextStream out(&data3);
+        out << ui->recvEdit_parse->toPlainText();
+    }
+    data3.close();
+
+    QMessageBox::information(this,tr("Save ..."),tr("Save to file %1").arg(path));
+}
+
+void MainWindow::on_action_HexShow_triggered(bool checked)
+{
+    isHexShow = checked;
+    if(isHexShow)
+    {
+    }
+}
+
+//QByteArray MainWindow::String2Hex(QString &arg1)
+//{
+//    //26 53 53 46 54 30 39 33 2D 32 01 99 30 30 2D 31 30 30 30 30 2D 30 30 30 30 2D 39 33 24
+//    QByteArray hex;
+//    QString left_Str;
+//    QString right_Str = arg1.trimmed();
+//    arg1.clear();
+
+//    bool ok = true;
+//    while(right_Str.size() > 0)
+//    {
+//        left_Str = right_Str.left(2).trimmed();
+//        right_Str = right_Str.right(right_Str.size()-2).trimmed();
+//        int d = left_Str.toInt(&ok,16);
+//        if(ok)
+//            hex.append(QChar(d));
+//    }
+//    return hex;
+//}
+
+// 发送按钮
+void MainWindow::on_bt_send_clicked()
+{
+    if(m_serialThread_Write == NULL)
+        return;
+
+    QString str = ui->sendEdit->toPlainText().toAscii();
+
+    bool ok = false;
+    int startNum = str.left(2).trimmed().toInt(&ok);
+
+    QByteArray send_bAry ;
+
+    if((str.at(2) == ' ') && ok)  // 16进制字符串
+    {
+        qDebug() << tr("16进制字符串");
+        if(ui->checkBox_HexSend->isChecked())  // 16进制发送方式
+        {
+            send_bAry = String2Hex(str);
+        }
+        else   // 明码方式发送
+        {
+            send_bAry = str.toAscii();
+        }
+    }
+    else  //明码字符串
+    {
+        qDebug() << tr("明码字符串");
+
+        if(ui->checkBox_HexSend->isChecked())
+            send_bAry = "";
+        else
+            send_bAry = str.toAscii();
+    }
+    if(ui->checkBox_CR->isChecked())
+    {
+        send_bAry.append(char('\r'));
+    }
+    if(ui->checkBox_LF->isChecked())
+    {
+        send_bAry.append(char('\n'));
+    }
+
+
+
+
+    //    //26 53 53 46 54 30 39 33 2D 32 01 99 30 30 2D 31 30 30 30 30 2D 30 30 30 30 2D 39 33 24
+    //    if(ui->checkBox_HexSend->isChecked())
+    //    {
+    //        QString  sendStr = ui->sendEdit->toPlainText().trimmed();
+    //        if(sendStr.startsWith("42") || sendStr.startsWith("26"))
+    //        {
+    //            send_bAry = String2Hex(sendStr);
+    //        }
+    //        else
+    //            return;
+    //    }
+    //    else
+    //    {
+    //        send_bAry = ui->sendEdit->toPlainText().toAscii();
+    //    }
+
+    m_serialThread_Write->sendStr = send_bAry;
+    m_serialThread_Write->isWrire = true;
+    update_Counter();
+}
+
+// 连续发送checkbox
+void MainWindow::on_checkBox_continuousSend_toggled(bool checked)
+{
+    qint64 interval = ui->spinBox_Interval->value();
+    if(interval <= 5)
+    {
+        ui->spinBox_Interval->setValue(5);
+        QMessageBox::information(this,tr("Kindly Reminder"),tr("Intervals of not less than 5 seconds!"));
+        return;
+    }
+    QByteArray str = ui->sendEdit->toPlainText().toAscii();
+    qDebug() << str;
+
+    if(checked)
+    {
+        m_serialThread_Write->msc = ui->spinBox_Interval->value();
+        m_serialThread_Write->sendStr = str;
+
+        m_serialThread_Write->continuesSend = true;
+        m_serialThread_Write->isWrire = true;
+    }
+    else
+    {
+        m_serialThread_Write->continuesSend = false;
+    }
+}
+
+void MainWindow::on_sendEdit_textChanged()
+{
+    if(isinit)
+        return;
+    if(m_serialThread_Write->writeData == true)
+    {
+        QByteArray str = ui->sendEdit->toPlainText().toAscii();
+        qDebug() <<  "send commod changed :" << str;
+        m_serialThread_Write->sendStr = str;
+    }
+}
+
+void MainWindow::init_listViewSendCommond_Model()
+{
+    m_sendCommd_Model = new QStringListModel(this);
+    m_sendCommd_Model->setHeaderData(0,Qt::Vertical,1,Qt::DisplayRole);
+
+    //    connect(m_sendCommd_Model,SIGNAL(dataChanged(QModelIndex,QModelIndex)))
+
+    m_sendCommd_Model->setStringList(list);
+    ui->listView_Commond->setModel(m_sendCommd_Model);
+}
+
+
+// 编辑命令
+
+void MainWindow::on_pushButton_Edit_SendCommd_clicked()
+{
+    //    Qt::WindowFlags flags = m_child_new_Experiment->windowFlags();
+    //    flags = flags & ~Qt::WindowMaximizeButtonHint;
+    //    flags = flags & ~Qt::WindowMinimizeButtonHint;
+    //    flags = flags & ~Qt::WindowStaysOnTopHint;
+    EditCommond *m_editCommond = new EditCommond(m_sendCommd_Model,this,Qt::Window);
+    m_editCommond->show();
+}
+
+void MainWindow::on_checkBox_toggled(bool checked)
+{
+    //    QPropertyAnimation *animation = new QPropertyAnimation(ui->frame_config,"geometry");
+    //    animation->setDuration(800);
+    //    if(checked)
+    //    {
+    //        animation->setStartValue(QRect(0, 0, 0, 0));
+    //        animation->setEndValue(m_serialConfig_rec);
+
+    //    }
+    //    else
+    //    {
+    //        animation->setStartValue(m_serialConfig_rec);
+    //        animation->setEndValue(QRect(0, 0, 0, 0));
+
+    //    }
+    //    animation->setEasingCurve(QEasingCurve::InOutQuad);
+    //    animation->start();
+
+
+    ui->frame_config->setVisible(checked);
+
+}
+
+void MainWindow::on_listView_Commond_doubleClicked(const QModelIndex &index)
+{
+    int row = index.row();
+    list.clear();
+    list = m_sendCommd_Model->stringList();
+    //    int index = ui->listView_Commond->currentIndex().row();
+    if(row >= 0)
+    {
+        QString str = list.at(row);
+        if(str.startsWith("//"))
+            return;
+
+        ui->sendEdit->setPlainText(str);
+        on_bt_send_clicked();
+
+        //        if((!str.startsWith("BEGIN"))|| (!str.startsWith("&")))
+        //        {
+        //            ui->sendEdit->setPlainText(str);
+        //            on_bt_send_clicked();
+        //        }
+        //        else if(ui->checkBox_HexSend->isChecked())
+        //        {
+        //            ui->sendEdit->setPlainText("");
+        //        }
+        //        else
+        //        {
+        //            ui->sendEdit->setPlainText(str);
+        //            on_bt_send_clicked();
+        //        }
+    }
+}
+

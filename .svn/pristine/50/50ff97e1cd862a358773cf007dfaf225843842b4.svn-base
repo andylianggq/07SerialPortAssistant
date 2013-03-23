@@ -1,0 +1,285 @@
+#include "package.h"
+#include "debug.h"
+#include <QTextCodec>
+
+
+//UTF-8 转换 GBK
+QString _From_UTF8_2_GBK(const QByteArray &InputStr)
+{   
+#ifdef Q_OS_WIN
+    QTextCodec *codec = QTextCodec::codecForName("gbk");
+    if(codec)
+    {
+        return codec->toUnicode(InputStr);
+    }
+    else
+    {
+        return QString("");
+    }
+#else
+    return  QString::fromLocal8Bit(InputStr);
+#endif
+}
+
+//2 GBK 转换 UTF-8
+QString _From_GBK_2_UTF8(const QString &InputStr)
+{
+#ifdef Q_OS_WIN
+    QTextCodec *codec= QTextCodec::codecForName("gbk");
+    if (codec)
+    {
+        return QString::fromLatin1(codec->fromUnicode(InputStr));
+    }
+    else
+    {
+        return QString("");
+    }
+#else
+    return QString::fromLatin1(InputStr.toLocal8Bit());
+#endif
+}
+
+QStringList split_String(QString &str,  bool *ok,const char &start_Key, const char &end_Key)
+{
+    QStringList list;
+    int start = 0;
+    int end = 0;
+    if(str.size() >= DATA_LENGTH)
+    {
+        *ok = true;
+        while(((start = str.indexOf(start_Key,start)) != -1)  && ((end = str.indexOf(end_Key,start)) != -1))
+        {
+            end += 1;
+            int len = end - start;
+            QString temp = str.mid(start,len);
+            if(temp.size() >= DATA_LENGTH)
+                list.append(temp);
+            start = end;
+        }
+        if(list.count() <= 0)
+            *ok = false;
+    }
+    else
+    {
+        *ok = false;
+    }
+    return list;
+}
+
+QList<QByteArray> split_ByteArray(QByteArray &str, bool *ok,const char &start_Key, const char &end_Key)
+{
+    QList<QByteArray> list;
+    int start = 0;
+    int end = 0;
+    if(str.size() >= DATA_LENGTH)
+    {
+        *ok = true;
+        while(((start = str.indexOf(start_Key,start)) != -1)  && ((end = str.indexOf(end_Key,start)) != -1))
+        {
+            end += 1;
+            int len = end - start;
+            QByteArray temp = str.mid(start,len);
+            if(temp.size() >= DATA_LENGTH)
+                list.append(temp);
+            start = end;
+        }
+        if(list.count() <= 0)
+            *ok = false;
+    }
+    else
+    {
+        *ok = false;
+    }
+    return list;
+}
+
+bool Detect_Pack(QByteArray &_Pack_Str,bool check_CRC , const char &start_Key, const char &end_Key)
+{
+    bool ok = false;
+    if(_Pack_Str.size()<= DATA_LENGTH)
+    {
+        ok = false;
+        DPRINT("Datapack Min length error!");
+        return ok;
+    }
+
+    if(!(_Pack_Str.startsWith(start_Key)))
+    {
+        ok =  false;
+        DPRINT("Datapack is not start with '&'");
+        return ok;
+    }
+    if(!(_Pack_Str.endsWith(end_Key)))
+    {
+        ok =  false;
+        DPRINT("Datapack is not end with '$'");
+        return ok;
+    }
+
+    if(check_CRC)
+    {
+        //        DPRINT("Crc check!");
+        if(Check_Crc(_Pack_Str))
+            ok = true;
+        else
+            ok = false;
+    }
+    return ok;
+}
+
+bool Check_Crc(QByteArray str)
+{
+    uint calc_Crc = Get_Crc(str.data(),str.size()-3);
+    QString crc_str = str.mid(str.size()-3,2);
+    bool ok =false;
+    uint crc = crc_str.toUInt(&ok,16);
+    qDebug()<< "calc_Crc is : " << calc_Crc << " | crc is : " << crc;
+    if(ok)
+    {
+        if(calc_Crc != crc)
+        {
+            DPRINT("Crc Validation failure!");
+            ok = false;
+        }
+        else
+        {
+            //            DPRINT("Crc Validation successful!");
+            ok = true;
+        }
+    }
+    return ok;
+}
+
+uint Get_Crc(char *Buffer, Byte BufLen)//CRC校验码生成
+{
+    Byte Index;
+    uint Crc = 0x0000;
+    for(Index=0;Index<BufLen;Index++)
+        Crc += Buffer[Index];
+    Crc &= 0xff;
+    return Crc;
+}
+
+void Make_CRC(QString *_cmd)
+{
+    *_cmd = _cmd->trimmed();
+    int buflen = _cmd->length();
+
+    QByteArray cmda = _cmd->toAscii();
+
+    unsigned int Crc = 0x0000;
+    for(int Index=0;Index<buflen;Index++)
+        Crc += cmda.at(Index);
+    Crc &= 0xff;
+    char RstCrc[3];
+    sprintf(RstCrc,"%02X",Crc);
+    RstCrc[2] = '\0';
+    *_cmd = *_cmd + QString(RstCrc) + "$";
+}
+
+void Make_CRC(QByteArray *_cmd)
+{
+    //    *_cmd = _cmd->trimmed();
+    int buflen = _cmd->length();
+    uint Crc = 0x0000;
+    for(int Index=0;Index<buflen;Index++)
+        Crc += _cmd->at(Index);
+    Crc &= 0xff;
+    _cmd->append(QString("%1").arg(Crc,2,16,QLatin1Char('0')));
+    _cmd->append(END_MARK);
+}
+
+void Make_Hex_CRC(QString *_cmd)
+{
+//    *_cmd = _cmd->trimmed();
+    QByteArray cmda = String2Hex(*_cmd);
+    int buflen = cmda.length();
+    uint Crc = 0x0000;
+    for(int Index=0;Index<buflen;Index++)
+        Crc += cmda.at(Index);
+    Crc &= 0xff;
+
+    cmda.clear();
+    cmda.append(QString("%1").arg(Crc,2,16,QLatin1Char('0')).toUpper());
+
+    char ch = cmda.at(0);
+
+    _cmd->append(' ');
+    _cmd->append(QString::number(ch,16));
+//    _cmd->append(QString("%1").arg(((Crc & 0xf0) >> 4),2,16,QLatin1Char('0')));
+    _cmd->append(' ');
+//    _cmd->append(QString("%1").arg((Crc & 0x0f),2,16,QLatin1Char('0')));
+     ch = cmda.at(1);
+    _cmd->append(QString::number(ch,16));
+    _cmd->append(" 24");
+//    _cmd->append("24");
+
+//    *_cmd+(' ');
+//    *_cmd+(QString("%1").arg(Crc,2,16,QLatin1Char('0')));
+//    *_cmd+(' ');
+//    *_cmd+(END_MARK);
+
+}
+
+QByteArray String2Hex(QString &arg1)
+{
+    //26 53 53 46 54 30 39 33 2D 32 01 99 30 30 2D 31 30 30 30 30 2D 30 30 30 30 2D 39 33 24
+    QByteArray hex;
+    QString left_Str;
+    QString right_Str = arg1.trimmed();
+//    arg1.clear();
+
+    bool ok = true;
+    while(right_Str.size() > 0)
+    {
+        left_Str = right_Str.left(2).trimmed();
+        right_Str = right_Str.right(right_Str.size()-2).trimmed();
+        int d = left_Str.toInt(&ok,16);
+        if(ok)
+            hex.append(QChar(d));
+    }
+    return hex;
+}
+
+
+void Make_CRC(QByteArray *_cmd,bool hexStr)
+{
+
+}
+//conversion between hex string and int.
+//QString int_to_hexstr(qint32 _idata, qint8 _hexlen)  //hex len can be 1,2,4,6,8.
+//{
+//    char hresult[10];
+//    char hformat[5];
+//    hformat[0] = '%'; hformat[1] = '0'; hformat[2] = _hexlen + '0';
+//    hformat[3] = 'X'; hformat[4] = '\0';
+
+//    sprintf(hresult,hformat,_idata);
+//    return QString(hresult);
+//}
+
+//qint32  hexstr_to_int(QString _hexstr)
+//{
+//    bool cresult;
+
+//    qint32 iresult = (QString("0x"+_hexstr).toInt(&cresult,16));
+//    if(!cresult)  iresult = 0;
+//    return iresult;
+//}
+
+////conversion between float and hexstring;
+//QString float_to_hexstr(float _fdata)  //hexlen can only be 8;
+//{
+//    qint32  *int_p = (qint32*)(&_fdata);
+//    char hresult[9];
+//    sprintf(hresult,"%08X",*int_p);
+//    hresult[8] = '\0';
+//    return QString(hresult);
+//}
+
+//float hexstr_to_float(QString _hexstr)
+//{
+//    qint32 int_d = hexstr_to_int(_hexstr);
+//    float *f_d = (float*)(&int_d);
+//    return *f_d;
+//}

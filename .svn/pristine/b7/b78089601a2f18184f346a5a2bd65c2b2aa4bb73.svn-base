@@ -1,0 +1,13 @@
+[serial]
+portName=COM1
+sendCom=&SSFT093-2\x1\x8076
+baudRate=38400
+dataBit=8
+parityBit=0
+stopBit=0
+timeout=2293368
+interval=500
+mode=0
+
+[serialCommand]
+cmd_str=// \x67e5\x8be2\x70ed\x76d6\x6e29\x5ea6 \x8fd4\x56de 35.2\x2103, &SSQH0320160000081$, // \x67e5\x8be2\x6e29\x5757\x6e29\x5ea6 \x8fd4\x56de 35.2\x2103, &SSQA032016000007A$, // \x67e5\x8be2\x6563\x70ed\x7cfb\x7edf\x6e29\x5ea6 \x8fd4\x56de 35.2\x2103, &SSQF032016000007F$, &SSQH0320160000081$, &SSQH0320160000081$, // ----------------------------------------------------, // \x67e5\x8be2\x6563\x70ed\x7cfb\x7edf\x6e29\x5ea6 \x8fd4\x56de \x6d4b\x8bd5, 26 53 53 51 46 30 33 32 30 31 36 30 30 30 30 30 37 46 24, // ----------------------------------------------------, // \x67e5\x8be2\x6563\x70ed\x7cfb\x7edf\x6e29\x5ea6 \x8fd4\x56de \x6d4b\x8bd5, 26 53 53 51 46 30 33 32 30 31 36 30 30 30 30 30 37 46 24

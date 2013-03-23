@@ -1,0 +1,13 @@
+<RCC>
+    <qresource prefix="/images">
+        <file alias="network">images/network.png</file>
+        <file alias="serial">images/serialport.png</file>
+        <file alias="clean">images/clear.png</file>
+        <file alias="save">images/save.png</file>
+        <file alias="hex_show">images/hex_show.png</file>
+        <file alias="spliter_h">images/spliter_h.png</file>
+        <file alias="show1">images/1.gif</file>
+        <file alias="show2">images/2.gif</file>
+        <file alias="spliter_v">images/spliter_v.png</file>
+    </qresource>
+</RCC>
